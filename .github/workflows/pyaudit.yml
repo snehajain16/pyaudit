@@ -1,0 +1,59 @@
+name: PyAudit
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  checks: write
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install pyaudit
+        run: pip install -e ".[dev]"
+
+      - name: Run pyaudit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          pyaudit . --format json > pyaudit-results.json || true
+          python - <<'EOF'
+          import json, os, sys
+          sys.path.insert(0, ".")
+          from pyaudit.github import post_check_annotations
+          sha = os.environ["GITHUB_SHA"]
+          with open("pyaudit-results.json") as f:
+              raw = json.load(f)
+          # Reconstruct minimal result dict for annotations
+          from pyaudit.parsers.flake8 import Flake8Issue
+          from pyaudit.parsers.pylint import PylintIssue
+          from pyaudit.parsers.bandit import BanditIssue
+          results = {}
+          for t, items in raw["results"].items():
+              if t == "flake8":
+                  results[t] = [Flake8Issue(**i) for i in items]
+              elif t == "pylint":
+                  results[t] = [PylintIssue(**i) for i in items]
+              elif t == "bandit":
+                  results[t] = [BanditIssue(**i) for i in items]
+          post_check_annotations(results, sha)
+          EOF
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pyaudit-results
+          path: pyaudit-results.json
